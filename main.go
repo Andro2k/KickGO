@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os/signal"
@@ -12,10 +13,10 @@ import (
 	"github.com/Andro2k/KickGO/internal/service"
 )
 
-type MockTTS struct{}
-
-func (m *MockTTS) Speak(t string) error { fmt.Printf("   🔊 [AUDIO]: %s\n", t); return nil }
-func (m *MockTTS) SetVolume(l float64)  {}
+type IPCMessage struct {
+	Event string `json:"event"`
+	Data  any    `json:"data"`
+}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -23,23 +24,29 @@ func main() {
 
 	pusherClient := kick.NewKickPusherClient("us2", "32cbd69e4b950bf97679")
 	rewardsClient := kick.NewKickRewardsClient()
-	ttsEngine := &MockTTS{}
 
-	chatApp := service.NewChatService(pusherClient, ttsEngine)
+	chatApp := service.NewChatService(pusherClient)
 	rewardsApp := service.NewRewardsService(rewardsClient, 15)
 
 	roomID := 30913450
 	listaNegra := []string{"Nightbot", "BotRaro", "StreamElements"}
 
-	fmt.Println("🚀 Motor KickGO Unificado iniciando. Presiona Ctrl+C para salir.")
+	log.Println("🚀 Motor KickGO listo en modo Sidecar (NDJSON IPC)")
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		if err := chatApp.StartListening(roomID, listaNegra); err != nil {
-			log.Printf("⚠️ Hilo de Chat finalizado: %v", err)
+		chatChan, err := chatApp.StartListening(roomID, listaNegra)
+		if err != nil {
+			log.Printf("⚠️ Hilo de Chat finalizado: %v\n", err)
+			return
+		}
+
+		for msg := range chatChan {
+			packet, _ := json.Marshal(IPCMessage{Event: "chat", Data: msg})
+			fmt.Println(string(packet))
 		}
 	}()
 
@@ -48,12 +55,11 @@ func main() {
 		rewardsChan := rewardsApp.StartPolling(ctx)
 
 		for red := range rewardsChan {
-			fmt.Printf("🏆 [RECOMPENSA] %s canjeó: '%s' (Input: %s)\n",
-				red.Username, red.RewardTitle, red.UserInput)
-			_ = ttsEngine.Speak(fmt.Sprintf("%s canjeó %s", red.Username, red.RewardTitle))
+			packet, _ := json.Marshal(IPCMessage{Event: "reward", Data: red})
+			fmt.Println(string(packet))
 		}
 	}()
 
 	wg.Wait()
-	fmt.Println("🛑 Motor cerrado limpiamente. Cero fugas de memoria.")
+	log.Println("🛑 Motor Sidecar cerrado limpiamente.")
 }
